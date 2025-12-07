@@ -1,26 +1,30 @@
-import React, { useState, useEffect, useRef, useCallback, useImperativeHandle, forwardRef } from 'react';
-import { Globe, RotateCw, ZoomIn, ZoomOut, Grid3x3 } from 'lucide-react';
+import React, { useState, useEffect, useRef, useImperativeHandle, useCallback } from 'react';
+import { Globe, RotateCw, ZoomIn, ZoomOut, Grid3x3, X, Loader2 } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 
 interface BrowserPanelProps {
   websiteUrl: string;
   onUrlChange: (url: string) => void;
   dimensions?: { width: number; height: number };
+  onDimensionsReset?: () => void;
 }
 
 export interface BrowserPanelHandle {
   getScreenshot: () => string | null;
 }
 
-export const BrowserPanel = React.forwardRef<BrowserPanelHandle, BrowserPanelProps>(({ websiteUrl, onUrlChange, dimensions }, ref) => {
+export const BrowserPanel = React.forwardRef<BrowserPanelHandle, BrowserPanelProps>(({ websiteUrl, onUrlChange, dimensions, onDimensionsReset }, ref) => {
   const [showGrid, setShowGrid] = useState(false);
   const [zoom, setZoom] = useState(100);
   const [isConnected, setIsConnected] = useState(false);
   const [imageSrc, setImageSrc] = useState<string>('');
   const [sessionActive, setSessionActive] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
   const imgRef = useRef<HTMLImageElement>(null);
   const socketRef = useRef<Socket | null>(null);
+
+  const isInitializingRef = useRef(false);
 
   useImperativeHandle(ref, () => ({
     getScreenshot: () => {
@@ -52,15 +56,31 @@ export const BrowserPanel = React.forwardRef<BrowserPanelHandle, BrowserPanelPro
     });
 
     socket.on('frame', (base64: string) => {
-      setImageSrc(`data:image/png;base64,${base64}`);
+      setImageSrc(`data:image/jpeg;base64,${base64}`);
+      setIsLoading(false);
+      isInitializingRef.current = false;
     });
 
     socket.on('session-started', () => {
       setSessionActive(true);
+      // Loading remains true until first frame
+
       // If we have initial dimensions, send them now
       if (dimensions) {
         socket.emit('resize', dimensions);
       }
+    });
+
+    socket.on('loading-start', () => {
+      setIsLoading(true);
+    });
+
+    socket.on('loading-end', () => {
+      // Ignore loading-end if we are still in the initialization phase (waiting for first frame)
+      if (isInitializingRef.current) return;
+
+      // Small delay to ensure frame updates have caught up
+      setTimeout(() => setIsLoading(false), 200);
     });
 
     socket.on('error', (err: string) => {
@@ -75,12 +95,27 @@ export const BrowserPanel = React.forwardRef<BrowserPanelHandle, BrowserPanelPro
   const startSession = useCallback(() => {
     if (!socketRef.current || !websiteUrl) return;
 
+    setIsLoading(true);
+    setImageSrc(''); // Clear previous image
+    isInitializingRef.current = true;
+
     socketRef.current.emit('start-session', {
       url: websiteUrl,
       width: dimensions?.width || 1280,
       height: dimensions?.height || 720
     });
   }, [websiteUrl, dimensions]);
+
+  // Auto-load URL with debounce
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (websiteUrl && isValidUrl(websiteUrl)) {
+        startSession();
+      }
+    }, 1500); // 1.5s debounce
+
+    return () => clearTimeout(timer);
+  }, [websiteUrl, startSession]);
 
   // Handle URL changes or "Reload"
   const handleReload = () => {
@@ -111,10 +146,34 @@ export const BrowserPanel = React.forwardRef<BrowserPanelHandle, BrowserPanelPro
     socketRef.current.emit('input-event', { type: 'mousemove', x, y });
   };
 
-  const handleWheel = (e: React.WheelEvent) => {
-    if (!sessionActive || !socketRef.current) return;
-    socketRef.current.emit('input-event', { type: 'scroll', deltaX: e.deltaX, deltaY: e.deltaY });
-  };
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Wheel handling with non-passive listener to prevent default scrolling
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault(); // Stop main page scroll
+
+      // Only scroll remote if NOT synced (dimensions undefined)
+      // or if user holds Shift (optional feature for forced scroll, but let's stick to strict requirement first)
+      if (!sessionActive || !socketRef.current) return;
+
+      if (dimensions) {
+        // Dimensions are synced -> Lock scroll to prevent drift
+        return;
+      }
+
+      socketRef.current.emit('input-event', { type: 'scroll', deltaX: e.deltaX, deltaY: e.deltaY });
+    };
+
+    container.addEventListener('wheel', handleWheel, { passive: false });
+
+    return () => {
+      container.removeEventListener('wheel', handleWheel);
+    };
+  }, [sessionActive, dimensions]); // Re-bind when dimensions change
 
   // Keyboard handling - basic implementation attached to window or specific focus area
   useEffect(() => {
@@ -164,9 +223,20 @@ export const BrowserPanel = React.forwardRef<BrowserPanelHandle, BrowserPanelPro
         <h2 className="font-mono text-zinc-400">Live Website</h2>
         <div className="flex items-center gap-2">
           {dimensions && (
-            <span className="font-mono text-xs text-zinc-500 bg-zinc-800 px-2 py-1 rounded">
-              Fixed: {dimensions.width}x{dimensions.height}
-            </span>
+            <div className="flex items-center gap-2 rounded bg-zinc-800 px-2 py-1">
+              <span className="font-mono text-xs text-zinc-500">
+                Fixed: {dimensions.width}x{dimensions.height}
+              </span>
+              {onDimensionsReset && (
+                <button
+                  onClick={onDimensionsReset}
+                  className="rounded-full bg-zinc-700 p-0.5 text-zinc-400 hover:bg-zinc-600 hover:text-zinc-200"
+                  title="Reset dimensions"
+                >
+                  <X className="size-3" />
+                </button>
+              )}
+            </div>
           )}
           <div className={`flex items-center gap-2 rounded px-2 py-1 bg-green-950/30`}>
             <div className={`size-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
@@ -223,6 +293,17 @@ export const BrowserPanel = React.forwardRef<BrowserPanelHandle, BrowserPanelPro
           <ZoomIn className="size-3.5" />
         </button>
 
+        {dimensions && onDimensionsReset && (
+          <button
+            className="flex items-center gap-2 rounded bg-zinc-800 px-3 py-1.5 font-mono text-zinc-400 hover:bg-zinc-700 hover:text-red-400"
+            onClick={onDimensionsReset}
+            title="Reset to original dimensions"
+          >
+            <X className="size-3.5" />
+            <span>Reset Size</span>
+          </button>
+        )}
+
         <button
           className={`ml-auto flex items-center gap-2 rounded px-3 py-1.5 font-mono ${showGrid
             ? 'bg-blue-950/30 text-blue-400'
@@ -269,8 +350,9 @@ export const BrowserPanel = React.forwardRef<BrowserPanelHandle, BrowserPanelPro
           )}
 
           <div
+            ref={containerRef}
             className="h-full w-full overflow-hidden bg-white flex items-center justify-center relative select-none"
-            onWheel={handleWheel}
+          // onWheel removed, handled by useEffect for consistency
           >
             {imageSrc ? (
               <img
@@ -289,7 +371,13 @@ export const BrowserPanel = React.forwardRef<BrowserPanelHandle, BrowserPanelPro
               />
             ) : (
               <div className="text-center p-6">
-                {!isConnected ? (
+                {isLoading ? (
+                  <>
+                    <Loader2 className="mx-auto size-12 animate-spin text-blue-500" />
+                    <p className="mt-4 font-mono text-blue-400">Loading website...</p>
+                    <p className="mt-2 text-xs font-mono text-zinc-500">Connecting to remote browser</p>
+                  </>
+                ) : !isConnected ? (
                   <>
                     <Globe className="mx-auto size-12 text-red-500" />
                     <p className="mt-4 font-mono text-red-400">Server Disconnected</p>

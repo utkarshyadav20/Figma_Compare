@@ -4,9 +4,19 @@ interface ActionBarProps {
   onCompare: () => void;
   isComparing: boolean;
   disabled: boolean;
+  sensitivity: number;
+  onSensitivityChange: (level: number) => void;
+  hasResult: boolean;
 }
 
-export function ActionBar({ onCompare, isComparing, disabled }: ActionBarProps) {
+export function ActionBar({
+  onCompare,
+  isComparing,
+  disabled,
+  sensitivity,
+  onSensitivityChange,
+  hasResult
+}: ActionBarProps) {
   return (
     <div className="border-b border-zinc-800 bg-zinc-900 px-6 py-4">
       <div className="flex items-center justify-between">
@@ -45,6 +55,33 @@ export function ActionBar({ onCompare, isComparing, disabled }: ActionBarProps) 
               <Type className="size-3.5" />
               <span>Text</span>
             </button>
+          </div>
+
+          {/* Sensitivity Controls */}
+          <div className="flex items-center gap-2 ml-4">
+            <span className="font-mono text-zinc-500">Threshold:</span>
+            {hasResult ? (
+              <div className="flex items-center gap-1.5 rounded border border-blue-900/50 bg-blue-950/20 px-3 py-1.5 font-mono text-blue-400">
+                <span>{sensitivity}x Applied</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                {[1, 2, 3, 4, 5].map((level) => (
+                  <button
+                    key={level}
+                    onClick={() => onSensitivityChange(level)}
+                    className={`flex items-center justify-center rounded border px-3 py-1.5 font-mono text-sm transition-all ${sensitivity === level
+                      ? 'border-blue-500 bg-blue-500/10 text-blue-400'
+                      : 'border-zinc-700 bg-zinc-800/50 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300'
+                      }`}
+                    title={`${level}x Sensitivity`}
+                    disabled={isComparing}
+                  >
+                    {level}x
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 

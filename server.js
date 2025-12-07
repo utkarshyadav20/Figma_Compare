@@ -4,6 +4,7 @@ import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import pixelmatch from 'pixelmatch';
 import { PNG } from 'pngjs';
+import jpeg from 'jpeg-js';
 import { Buffer } from 'node:buffer';
 import dotenv from 'dotenv';
 import fs from 'node:fs';
@@ -219,71 +220,166 @@ function resizeImage(png, targetWidth, targetHeight) {
   return resized;
 }
 
-function analyzeImageDifferences(screenshot, figma, width, height) {
+function analyzeImageDifferences(screenshot, figma, width, height, sensitivity = 3) {
     const issues = [];
-    const regionSize = 100;
-    const regionsX = Math.ceil(width / regionSize);
-    const regionsY = Math.ceil(height / regionSize);
-  
-    for (let ry = 0; ry < regionsY; ry++) {
-      for (let rx = 0; rx < regionsX; rx++) {
-        const x = rx * regionSize;
-        const y = ry * regionSize;
-        const w = Math.min(regionSize, width - x);
-        const h = Math.min(regionSize, height - y);
-  
-        let diffPixels = 0;
-        let totalPixels = 0;
-        let avgColorDiff = 0;
-  
-        for (let py = y; py < y + h; py++) {
-          for (let px = x; px < x + w; px++) {
-            const idx = (py * width + px) * 4;
-            const rDiff = Math.abs(screenshot.data[idx] - figma.data[idx]);
-            const gDiff = Math.abs(screenshot.data[idx + 1] - figma.data[idx + 1]);
-            const bDiff = Math.abs(screenshot.data[idx + 2] - figma.data[idx + 2]);
-            const pixelDiff = (rDiff + gDiff + bDiff) / 3;
-            avgColorDiff += pixelDiff;
-            if (pixelDiff > 25) diffPixels++;
-            totalPixels++;
-          }
+    const BLOCK_SIZE = 20; // Block size for detection
+    const blocksX = Math.ceil(width / BLOCK_SIZE);
+    const blocksY = Math.ceil(height / BLOCK_SIZE);
+    const activeBlocks = new Uint8Array(blocksX * blocksY);
+
+    // Sensitivity Config
+    // 1x (Low) -> 5x (High)
+    const config = {
+        1: { pixelDiffThreshold: 50, blockThreshold: 0.20, minArea: 500 },
+        2: { pixelDiffThreshold: 35, blockThreshold: 0.10, minArea: 250 },
+        3: { pixelDiffThreshold: 25, blockThreshold: 0.05, minArea: 100 }, // Default
+        4: { pixelDiffThreshold: 15, blockThreshold: 0.02, minArea: 50 },
+        5: { pixelDiffThreshold: 5,  blockThreshold: 0.01, minArea: 10 }
+    }[sensitivity] || { pixelDiffThreshold: 25, blockThreshold: 0.05, minArea: 100 };
+
+    console.log(`Analyzing with sensitivity ${sensitivity}x:`, config);
+
+    // 1. Identify Active Blocks
+    for (let by = 0; by < blocksY; by++) {
+        for (let bx = 0; bx < blocksX; bx++) {
+            const startX = bx * BLOCK_SIZE;
+            const startY = by * BLOCK_SIZE;
+            const endX = Math.min(startX + BLOCK_SIZE, width);
+            const endY = Math.min(startY + BLOCK_SIZE, height);
+
+            let diffPixels = 0;
+            let totalPixels = 0;
+
+            for (let y = startY; y < endY; y++) {
+                const rowOffset = y * width;
+                for (let x = startX; x < endX; x++) {
+                    const idx = (rowOffset + x) * 4;
+                    // Check bounds
+                    if (idx + 2 >= screenshot.data.length) continue;
+
+                    const rDiff = Math.abs(screenshot.data[idx] - figma.data[idx]);
+                    const gDiff = Math.abs(screenshot.data[idx + 1] - figma.data[idx + 1]);
+                    const bDiff = Math.abs(screenshot.data[idx + 2] - figma.data[idx + 2]);
+                    const pixelDiff = (rDiff + gDiff + bDiff) / 3;
+                    
+                    if (pixelDiff > config.pixelDiffThreshold) { 
+                         diffPixels++;
+                    }
+                    totalPixels++;
+                }
+            }
+
+            // Threshold: if > X% of pixels in this block vary, mark it active
+            if (totalPixels > 0 && (diffPixels / totalPixels) > config.blockThreshold) {
+                activeBlocks[by * blocksX + bx] = 1;
+            }
         }
-  
-        avgColorDiff = avgColorDiff / totalPixels;
-        const diffPercentage = diffPixels / totalPixels;
-  
-        if (diffPercentage > 0.1) {
-          let type = 'Layout';
-          let message = `Region has ${(diffPercentage * 100).toFixed(0)}% pixel differences`;
-          let severity = 'Low';
-  
-          if (avgColorDiff > 100) {
-            type = 'Color';
-            message = `Significant color mismatch detected (avg diff: ${avgColorDiff.toFixed(0)})`;
-            severity = 'High';
-          } else if (diffPercentage > 0.5) {
-            type = 'Layout';
-            message = `Major layout differences detected (${(diffPercentage * 100).toFixed(0)}% different)`;
-            severity = 'High';
-          } else if (avgColorDiff > 50) {
-            type = 'Color';
-            message = `Moderate color differences (avg diff: ${avgColorDiff.toFixed(0)})`;
-            severity = 'Medium';
-          } else if (diffPercentage > 0.25) {
-            severity = 'Medium';
-          }
-  
-          issues.push({ id: `region-${rx}-${ry}`, type, message, severity, region: { x, y, width: w, height: h } });
-        }
-      }
     }
+
+    // 2. Connected Components (Clustering)
+    const visited = new Uint8Array(blocksX * blocksY);
+    const clusters = [];
+
+    for (let i = 0; i < blocksX * blocksY; i++) {
+        if (activeBlocks[i] && !visited[i]) {
+            const cluster = {
+                minX: Infinity, minY: Infinity,
+                maxX: -Infinity, maxY: -Infinity,
+                blockCount: 0
+            };
+            
+            const stack = [i];
+            visited[i] = 1;
+
+            while (stack.length > 0) {
+                const currIdx = stack.pop();
+                const cx = currIdx % blocksX;
+                const cy = Math.floor(currIdx / blocksX);
+
+                cluster.minX = Math.min(cluster.minX, cx);
+                cluster.minY = Math.min(cluster.minY, cy);
+                cluster.maxX = Math.max(cluster.maxX, cx);
+                cluster.maxY = Math.max(cluster.maxY, cy);
+                cluster.blockCount++;
+
+                const neighbors = [
+                    { nx: cx + 1, ny: cy }, // Right
+                    { nx: cx - 1, ny: cy }, // Left
+                    { nx: cx, ny: cy + 1 }, // Down
+                    { nx: cx, ny: cy - 1 }  // Up
+                ];
+
+                for (const n of neighbors) {
+                    if (n.nx >= 0 && n.nx < blocksX && n.ny >= 0 && n.ny < blocksY) {
+                         const nIdx = n.ny * blocksX + n.nx;
+                         if (activeBlocks[nIdx] && !visited[nIdx]) {
+                             visited[nIdx] = 1;
+                             stack.push(nIdx);
+                         }
+                    }
+                }
+            }
+            clusters.push(cluster);
+        }
+    }
+
+    // 3. Generate Issues
+    clusters.forEach((cluster, index) => {
+        if (cluster.blockCount < 1) return; 
+
+        const x = cluster.minX * BLOCK_SIZE;
+        const y = cluster.minY * BLOCK_SIZE;
+        const w = (cluster.maxX - cluster.minX + 1) * BLOCK_SIZE;
+        const h = (cluster.maxY - cluster.minY + 1) * BLOCK_SIZE;
+
+        const finalX = Math.max(0, x);
+        const finalY = Math.max(0, y);
+        const finalW = Math.min(w, width - finalX);
+        const finalH = Math.min(h, height - finalY);
+
+        let severity = 'Low';
+        let type = 'Layout';
+        const area = finalW * finalH;
+
+        // Skip issues smaller than minArea
+        if (area < config.minArea) return;
+
+        // Heuristics for classification
+        if (area > 50000) {
+            severity = 'High';
+        } else if (area > 10000) {
+            severity = 'Medium';
+        }
+
+        if (area < 1000) {
+             type = 'Color'; 
+        }
+
+        issues.push({
+            id: `diff-cluster-${index}`,
+            type: type,
+            message: `Difference detected in ${finalW}x${finalH} region`,
+            severity,
+            region: {
+                x: finalX,
+                y: finalY,
+                width: finalW,
+                height: finalH
+            }
+        });
+    });
+
+    // Return top 20 biggest issues
     return issues.sort((a, b) => {
-        const severityOrder = { High: 3, Medium: 2, Low: 1 };
-        return severityOrder[b.severity] - severityOrder[a.severity];
-    }).slice(0, 10);
+         const sevScore = { High: 3, Medium: 2, Low: 1 };
+         if (sevScore[a.severity] !== sevScore[b.severity]) {
+             return sevScore[b.severity] - sevScore[a.severity];
+         }
+         return (b.region.width * b.region.height) - (a.region.width * a.region.height);
+    }).slice(0, 20);
   }
 
-async function performComparison(websiteUrl, figmaImageUrl, dimensions, screenshotBase64) {
+async function performComparison(websiteUrl, figmaImageUrl, dimensions, screenshotBase64, sensitivity = 3) {
     if (!screenshotBase64) {
         throw new Error("Client-side screenshot is required for local comparison.");
     }
@@ -295,13 +391,24 @@ async function performComparison(websiteUrl, figmaImageUrl, dimensions, screensh
     const screenshotBuffer = Buffer.from(cleanBase64, 'base64');
     console.log(`Screenshot buffer size: ${screenshotBuffer.length}`);
     
-    // Check for PNG signature in screenshot
-    if (screenshotBuffer.length > 0 && screenshotBuffer[0] !== 0x89) {
-         console.warn("Screenshot buffer does not start with PNG signature!");
-         console.log("First bytes:", screenshotBuffer.subarray(0, 16).toString('hex'));
+    // Check for PNG or JPEG signature in screenshot
+    let screenshotPng;
+    if (screenshotBuffer.length > 0 && screenshotBuffer[0] === 0xFF && screenshotBuffer[1] === 0xD8) {
+        console.log("Detected JPEG input, decoding...");
+        const rawJpeg = jpeg.decode(screenshotBuffer, { useTArray: true }); // Returns Uint8Array data (rgba)
+        // Convert to PNG object structure for consistency
+        screenshotPng = {
+            width: rawJpeg.width,
+            height: rawJpeg.height,
+            data: rawJpeg.data
+        };
+    } else {
+        if (screenshotBuffer.length > 0 && screenshotBuffer[0] !== 0x89) {
+             console.warn("Screenshot buffer does not start with PNG signature!");
+             console.log("First bytes:", screenshotBuffer.subarray(0, 16).toString('hex'));
+        }
+        screenshotPng = PNG.sync.read(screenshotBuffer);
     }
-    
-    const screenshotPng = PNG.sync.read(screenshotBuffer);
 
     // 2. Download Figma Image
     console.log(`Downloading Figma image from: ${figmaImageUrl}`);
@@ -332,6 +439,18 @@ async function performComparison(websiteUrl, figmaImageUrl, dimensions, screensh
     const resizedFigma = resizeImage(figmaPng, width, height);
 
     // 4. Pixelmatch
+    // Sensitivity map for pixelmatch threshold (0 to 1)
+    // Smaller values = More sensitive (stricter matching)
+    // 1x (Low) -> 0.9 (Very loose)
+    // 5x (High) -> 0.1 (Very strict)
+    const pixelmatchThreshold = {
+        1: 0.9,
+        2: 0.7,
+        3: 0.5, // Standard
+        4: 0.3,
+        5: 0.1 
+    }[sensitivity] || 0.5;
+
     const diffPng = new PNG({ width, height });
     const diffPixels = pixelmatch(
         resizedScreenshot.data,
@@ -339,14 +458,14 @@ async function performComparison(websiteUrl, figmaImageUrl, dimensions, screensh
         diffPng.data,
         width,
         height,
-        { threshold: 0.7 }
+        { threshold: pixelmatchThreshold }
     );
 
     const diffScore = diffPixels / (width * height);
-    console.log(`Diff score: ${(diffScore * 100).toFixed(2)}%`);
+    console.log(`Diff score: ${(diffScore * 100).toFixed(2)}% (Threshold: ${pixelmatchThreshold})`);
 
     // 5. Analyze
-    const issues = analyzeImageDifferences(resizedScreenshot, resizedFigma, width, height);
+    const issues = analyzeImageDifferences(resizedScreenshot, resizedFigma, width, height, sensitivity);
 
     // 6. Return Base64 Images (No Supabase Storage)
     const diffBuffer = PNG.sync.write(diffPng);
@@ -394,7 +513,7 @@ app.post('/figma-metadata', async (c) => {
 
 app.post('/compare-ui', async (c) => {
     try {
-        const { figmaUrl, websiteUrl, screenshot, dimensions, figmaImageUrl: providedFigmaImageUrl } = await c.req.json();
+        const { figmaUrl, websiteUrl, screenshot, dimensions, figmaImageUrl: providedFigmaImageUrl, sensitivity } = await c.req.json();
 
         if (!figmaUrl || !websiteUrl) return c.json({ error: 'Missing logic' }, 400);
 
@@ -422,7 +541,8 @@ app.post('/compare-ui', async (c) => {
             websiteUrl,
             finalFigmaImageUrl,
             frameDimensions,
-            screenshot // Must be provided
+            screenshot, // Must be provided
+            sensitivity || 3
         );
 
         return c.json(result);

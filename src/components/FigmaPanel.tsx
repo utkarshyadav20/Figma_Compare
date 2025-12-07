@@ -173,7 +173,7 @@ export function FigmaPanel({ figmaUrl, onUrlChange, onDimensionsChange }: FigmaP
       </div>
 
       {/* Instructions */}
-      <div className="mt-4 rounded-lg border border-blue-900/50 bg-blue-950/20 p-4">
+      {/* <div className="mt-4 rounded-lg border border-blue-900/50 bg-blue-950/20 p-4">
         <p className="mb-2 font-mono text-blue-400">How to select a specific frame:</p>
         <ol className="list-decimal space-y-1 pl-5 font-mono text-zinc-400">
           <li>Click &quot;Open in Figma&quot; to open the file in a new tab</li>
@@ -185,7 +185,7 @@ export function FigmaPanel({ figmaUrl, onUrlChange, onDimensionsChange }: FigmaP
         <p className="mt-3 font-mono text-zinc-500">
           💡 Tip: Click &quot;Sync Dims&quot; to apply Figma frame dimensions to the live website view.
         </p>
-      </div>
+      </div> */}
     </div>
   );
 }

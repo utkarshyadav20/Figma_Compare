@@ -39,16 +39,20 @@ export default function App() {
   const [isComparing, setIsComparing] = useState(false);
   const [result, setResult] = useState<ComparisonResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showGuide, setShowGuide] = useState(true);
+  const [showGuide, setShowGuide] = useState(false);
   const [currentDimensions, setCurrentDimensions] = useState<{ width: number; height: number } | undefined>(undefined);
+  const [sensitivity, setSensitivity] = useState(3);
 
   const browserPanelRef = useRef<BrowserPanelHandle>(null);
 
-  const handleCompare = async () => {
+  const handleCompare = async (sensitivityOverride?: number) => {
     if (!figmaUrl || !websiteUrl) {
       setError('Please provide both Figma URL and Website URL');
       return;
     }
+
+    const sens = sensitivityOverride ?? sensitivity;
+    if (sensitivityOverride) setSensitivity(sens);
 
     setIsComparing(true);
     setError(null);
@@ -104,6 +108,7 @@ export default function App() {
             websiteUrl,
             screenshot, // Pass client-side screenshot
             dimensions, // Pass confirmed dimensions
+            sensitivity: sens, // Pass sensitivity
           }),
         }
       );
@@ -145,13 +150,16 @@ export default function App() {
       </header>
 
       {/* Setup Banner */}
-      <SetupBanner />
+      {/* <SetupBanner /> */}
 
       {/* Action Bar */}
       <ActionBar
-        onCompare={handleCompare}
+        onCompare={() => handleCompare()}
         isComparing={isComparing}
         disabled={!figmaUrl || !websiteUrl}
+        sensitivity={sensitivity}
+        onSensitivityChange={setSensitivity}
+        hasResult={!!result}
       />
 
       {/* Error Message */}
@@ -173,7 +181,12 @@ export default function App() {
           </div>
         </div>
       ) : result ? (
-        <ResultsView result={result} onBack={() => setResult(null)} />
+        <ResultsView
+          result={result}
+          onBack={() => setResult(null)}
+          sensitivity={sensitivity}
+          onSensitivityChange={handleCompare}
+        />
       ) : (
         <div className="grid grid-cols-2 gap-px bg-zinc-800">
           <FigmaPanel
@@ -186,6 +199,7 @@ export default function App() {
             websiteUrl={websiteUrl}
             onUrlChange={setWebsiteUrl}
             dimensions={currentDimensions}
+            onDimensionsReset={() => setCurrentDimensions(undefined)}
           />
         </div>
       )}

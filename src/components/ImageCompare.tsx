@@ -5,10 +5,18 @@ import { Issue } from '../App';
 interface ImageCompareProps {
   imageUrl: string;
   selectedIssue: Issue | null;
-  activeTab: 'design' | 'live' | 'diff';
+  activeTab: 'design' | 'heatmap' | 'image_diff';
+  issues?: Issue[];
+  onSelectIssue?: (issue: Issue) => void;
 }
 
-export function ImageCompare({ imageUrl, selectedIssue, activeTab }: ImageCompareProps) {
+export function ImageCompare({
+  imageUrl,
+  selectedIssue,
+  activeTab,
+  issues = [],
+  onSelectIssue = () => { },
+}: ImageCompareProps) {
   const [zoom, setZoom] = useState(100);
 
   const handleZoomIn = () => setZoom((prev) => Math.min(prev + 25, 400));
@@ -61,41 +69,64 @@ export function ImageCompare({ imageUrl, selectedIssue, activeTab }: ImageCompar
           <div className="relative" style={{ transform: `scale(${zoom / 100})` }}>
             <img
               src={imageUrl}
-              alt={activeTab === 'design' ? 'Figma design' : activeTab === 'live' ? 'Live screenshot' : 'Diff overlay'}
+              alt={activeTab === 'design' ? 'Figma design' : activeTab === 'heatmap' ? 'Heatmap Comparison' : 'Image Diff'}
               className="max-w-none rounded border border-zinc-700 shadow-2xl"
               style={{ imageRendering: zoom > 100 ? 'pixelated' : 'auto' }}
             />
 
-            {/* Highlight selected issue */}
-            {selectedIssue && activeTab === 'diff' && (
-              <div
-                className="absolute border-2 border-red-500 bg-red-500/10 animate-pulse"
-                style={{
-                  left: `${selectedIssue.region.x}px`,
-                  top: `${selectedIssue.region.y}px`,
-                  width: `${selectedIssue.region.width}px`,
-                  height: `${selectedIssue.region.height}px`,
-                }}
-              >
-                <div className="absolute -top-6 left-0 rounded bg-red-500 px-2 py-1 font-mono text-white">
-                  {selectedIssue.type}
-                </div>
-              </div>
-            )}
+            {/* Highlight all issues */}
+            {activeTab === 'image_diff' &&
+              issues.map((issue) => {
+                const isSelected = selectedIssue?.id === issue.id;
+                return (
+                  <div
+                    key={issue.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelectIssue(issue);
+                    }}
+                    className={`absolute cursor-pointer transition-all duration-200 ${isSelected
+                        ? 'border-2 border-red-500 bg-red-500/20 z-10 animate-pulse'
+                        : 'border border-red-500/30 bg-red-500/5 hover:bg-red-500/10 hover:border-red-500/60'
+                      }`}
+                    style={{
+                      left: `${issue.region.x}px`,
+                      top: `${issue.region.y}px`,
+                      width: `${issue.region.width}px`,
+                      height: `${issue.region.height}px`,
+                    }}
+                  >
+                    {isSelected && (
+                      <div className="absolute -top-6 left-0 whitespace-nowrap rounded bg-red-500 px-2 py-1 font-mono text-xs text-white shadow-lg">
+                        {issue.type} • {issue.severity}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
           </div>
         </div>
       </div>
 
       {/* Info Banner */}
-      {activeTab === 'diff' && (
+      {(activeTab === 'heatmap' || activeTab === 'image_diff') && (
         <div className="border-t border-zinc-800 bg-zinc-900/80 px-6 py-3 backdrop-blur-sm">
           <div className="flex items-center justify-between">
-            <p className="font-mono text-zinc-400">
-              <span className="text-purple-400">Purple/Magenta highlights</span> indicate pixel
-              differences
-            </p>
+            {activeTab === 'heatmap' ? (
+              <p className="font-mono text-zinc-400">
+                <span className="text-purple-400">Purple/Magenta highlights</span> indicate pixel
+                differences
+              </p>
+            ) : (
+              <p className="font-mono text-zinc-400">
+                <span className="text-red-400">Red boxes</span> indicate detected issues
+              </p>
+            )}
+
             <p className="font-mono text-zinc-500">
-              Click issues on the right to highlight regions
+              {activeTab === 'image_diff'
+                ? 'Click boxes to highlight details'
+                : 'Switch to Image Diff to see regions'}
             </p>
           </div>
         </div>
